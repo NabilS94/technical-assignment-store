@@ -1,4 +1,7 @@
+import "reflect-metadata";
+
 import { JSONArray, JSONObject, JSONPrimitive } from "./json-types";
+import { writeDataFromKey, readDataFromKey } from "./utils";
 
 export type Permission = "r" | "w" | "rw" | "none";
 
@@ -20,33 +23,86 @@ export interface IStore {
   entries(): JSONObject;
 }
 
-export function Restrict(...params: unknown[]): any {
+export function Restrict(...permissions: Permission[]): any {
+  return function (target: IStore, key: string) {
+    Reflect.defineMetadata("permission", permissions, target, key);
+  }
 }
 
 export class Store implements IStore {
   defaultPolicy: Permission = "rw";
 
   allowedToRead(key: string): boolean {
-    throw new Error("Method not implemented.");
+    const keyPermissions: Permission[] = Reflect.getMetadata("permission", this, key) || [this.defaultPolicy];
+    return keyPermissions.includes("r") || keyPermissions.includes("rw");
   }
 
   allowedToWrite(key: string): boolean {
-    throw new Error("Method not implemented.");
+    const keyPermissions: Permission[] = Reflect.getMetadata("permission", this, key) || [this.defaultPolicy];
+    return keyPermissions.includes("w") || keyPermissions.includes("rw");
   }
 
   read(path: string): StoreResult {
-    throw new Error("Method not implemented.");
+    const keys = path.split(":");
+    const subPath = keys.slice(1).join(":");
+    const data: any = this;
+
+    // Handle nested store case
+    if (keys.length > 1 && data[keys[0]] instanceof Store) {
+      return data[keys[0]].read(subPath);
+    }
+
+    // Enforce read permissions
+    if (!this.allowedToRead(keys[0])) {
+      throw new Error('Access denied for read');
+    }
+
+    // Use utility function to handle reading through keys
+    const result = keys.length > 1 ? readDataFromKey(keys, this) : data[keys[0]];
+
+    // Return function result if the value is a function, otherwise the value itself
+    return result instanceof Function ? result() : result !== undefined ? result : null;
   }
 
   write(path: string, value: StoreValue): StoreValue {
-    throw new Error("Method not implemented.");
+    const keys = path.split(":");
+    const subPath = keys.slice(1).join(":");
+    const data: any = this;
+
+    // Handle nested store case
+    if (keys.length > 1 && data[keys[0]] instanceof Store) {
+      return data[keys[0]].write(subPath, value);
+    }
+
+    // Enforce write permissions
+    if (!this.allowedToWrite(keys[0])) {
+      throw new Error('Access denied for write');
+    }
+
+    // Use utility function to write data through keys
+    writeDataFromKey(keys, this, value);
+
+    return value;
   }
 
   writeEntries(entries: JSONObject): void {
-    throw new Error("Method not implemented.");
+    for (const key in entries) {
+      if (entries.hasOwnProperty(key)) {
+        this.write(key, entries[key]);
+      }
+    }
   }
 
   entries(): JSONObject {
-    throw new Error("Method not implemented.");
+    const keys = Object.keys(this);
+    const entries: JSONObject = {};
+    const data: any = this;
+
+    for (const key of keys) {
+      if (Reflect.getMetadata('permission', this, key) && this.allowedToRead(key)) {
+        entries[key] = data[key]
+      }
+    }
+    return entries
   }
 }
